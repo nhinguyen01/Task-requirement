@@ -110,8 +110,7 @@ SELECT
   CAST(SUM(s.profit) AS DECIMAL(16, 2)) AS total_profit,
   CAST(100.0 * SUM(s.profit) / NULLIF(SUM(s.sales), 0) AS DECIMAL(6, 2)) AS profit_margin_pct
 FROM e_commerce.ecom_sales AS s
-JOIN e_commerce.region AS r
-  ON r.region_code = s.region_code
+JOIN e_commerce.region AS r ON r.region_code = s.region_code
 GROUP BY r.market
 HAVING COUNT(DISTINCT s.order_id) >= 100
 ORDER BY profit_margin_pct DESC;
@@ -198,7 +197,169 @@ GROUP BY country
 ORDER BY total_sales DESC;
 
 
---Q11: 
+--Q11:  doanh thu theo tháng + so sánh với cùng tháng năm trước (YoY growth %) 24 tháng gần nhất. Board muốn thấy trend tăng trưởng rõ ràng. 
+--Output: year_month, doanh thu, doanh thu cùng kỳ năm trước, % tăng trưởng YoY. 
 
-SELECT TOP 5 * FROM e_commerce.ecom_sales;
+with sales_by_month as (
+    SELECT 
+        DATEFROMPARTS(YEAR(order_date), MONTH(order_date), 1) AS year_month_start, 
+        SUM(sales) AS total_sales
+    FROM e_commerce.ecom_sales
+    GROUP BY DATEFROMPARTS(YEAR(order_date), MONTH(order_date), 1)
+),
 
+max_year_month as (
+    SELECT MAX(year_month_start) AS last_month FROM sales_by_month
+),
+
+prev_month as (
+    SELECT 
+        year_month_start, total_sales,    
+        LAG(total_sales,12) OVER (ORDER BY year_month_start) AS prev_year_sales
+    FROM sales_by_month
+)
+
+SELECT 
+    FORMAT(p.year_month_start,'yyyy-MM') AS year_month,
+    CAST(p.total_sales AS DECIMAL(16,2)) AS current_sales,
+    CAST(p.prev_year_sales AS DECIMAL(16,2)) AS prev_year_sales,
+    CAST((p.total_sales - p.prev_year_sales)*100.0/NULLIF(p.prev_year_sales,0)AS DECIMAL(8,2)) AS yoy_change
+FROM prev_month AS p 
+CROSS JOIN max_year_month AS y
+WHERE p.year_month_start >= DATEADD(MONTH, -23, y.last_month)  
+ORDER BY p.year_month_start; 
+
+--Q12: top 3 sản phẩm có lifetime profit cao nhất trong mỗi category. Dùng để làm product spotlight trong báo cáo Q4. Output: category, tên sản phẩm, tổng profit, thứ hạng (1-3) trong category.
+
+With profit_category AS (
+    SELECT 
+        p.category,
+        p.product,
+        p.product_code,
+        SUM(s.profit) AS total_profit
+    FROM e_commerce.ecom_sales AS s
+    JOIN e_commerce.product AS p ON s.product_code = p.product_code
+    GROUP BY p.category, p.product_code,p.product
+    ),
+rank_profit AS (
+    SELECT
+        category,
+        product,
+        total_profit,
+        ROW_NUMBER() OVER (PARTITION BY category ORDER BY total_profit DESC, product_code) AS rank
+    FROM profit_category
+)
+
+SELECT 
+    category,
+    product,
+    total_profit,
+    rank
+FROM rank_profit
+WHERE rank <= 3
+ORDER BY category, rank;
+
+--Q13***: bao nhiêu % khách hàng có mua ở nhiều khu vực khác nhau (VD: đơn đầu giao về một thành phố, các đơn sau lại giao đi nơi khác)? 
+--Xác định cho mỗi khách: khu vực của lần mua đầu tiên, và liệu sau đó họ có mua ở khu vực khác không. 
+--Output 1 con số % + top 20 khách mua nhiều khu vực chi tiêu nhiều nhất
+
+--Nên nói với Head of International rằng: nếu chạy phân tích ở cấp market hoặc country, kết quả sẽ chính xác là 0% — trong dataset này, mỗi customer chỉ thuộc về một country.
+--Việc khách hàng mua hàng ở nhiều nơi chỉ xuất hiện khi phân tích ở cấp city.
+
+WITH start_order AS (
+    SELECT 
+        customer_id,
+        FIRST_VALUE(region_code) OVER (PARTITION BY customer_id ORDER BY order_date, order_id) AS first_region_code,
+        region_code,
+        sales
+        FROM e_commerce.ecom_sales
+),
+
+calculated AS (
+    SELECT 
+        customer_id,
+        SUM(sales) AS total_sales,
+        MAX(CASE WHEN region_code <> first_region_code THEN 1 ELSE 0 END) AS multi_region_code
+    FROM start_order
+    GROUP BY customer_id
+)
+
+SELECT TOP 20 
+    c.customer_id,
+    r.city AS first_city,
+    r.country,
+    CAST (c.total_sales AS DECIMAL(16,2)) AS total_sales,
+    (SELECT CAST(100.0 *SUM(multi_region_code)/COUNT(*) AS DECIMAL(5, 2)) FROM calculated ) AS multi_region_pct
+FROM calculated AS c 
+JOIN e_commerce.ecom_sales AS s1 
+    ON s1.row_id = (SELECT TOP 1 s2.row_id 
+                    FROM e_commerce.ecom_sales AS s2
+                    WHERE s2.customer_id = c.customer_id
+                    ORDER BY s2.order_date, s2.row_id)
+JOIN e_commerce.region AS r ON s1.region_code = r.region_code
+WHERE c.multi_region_code = 1
+ORDER BY c.total_sales DESC, c.customer_id;
+
+
+--Q14: Team CRM cần phân khúc khách hàng theo RFM (Recency: số ngày từ đơn gần nhất, Frequency: số đơn, Monetary: tổng chi tiêu). 
+--Chia mỗi chỉ số thành 5 mức (1-5, 5 là tốt nhất). Tính điểm RFM tổng hợp. Gửi chị top 20 khách có RFM cao nhất để team chạy loyalty program
+
+with max_dates AS (
+    SELECT MAX(order_date) AS max_date
+    FROM e_commerce.ecom_sales),
+
+RFM_raw AS (
+    SELECT 
+        s.customer_id,
+        DATEDIFF(day, MAX(s.order_date), (SELECT max_date FROM max_dates)) AS recency,
+        COUNT(DISTINCT s.order_id) AS frequency,
+        SUM(s.sales) AS monetary
+    FROM e_commerce.ecom_sales AS s
+    GROUP BY s.customer_id
+),
+
+RFM_scores AS (
+    SELECT customer_id, recency, frequency, monetary,
+        NTILE(5) OVER (ORDER BY recency DESC) AS r_score, --Càng nhỏ thì điểm càng cao
+        NTILE(5) OVER (ORDER BY frequency ASC) AS f_score,
+        NTILE(5) OVER (ORDER BY monetary ASC) AS m_score
+    FROM RFM_raw
+)
+
+SELECT TOP 20
+    customer_id,
+    recency, frequency, CAST(monetary AS DECIMAL(16, 2)) AS monetary,
+    r_score, f_score, m_score,
+    r_score + f_score + m_score AS scores
+FROM RFM_scores
+ORDER BY scores DESC, monetary DESC, customer_id;
+
+
+--Q15: top 15 cặp sản phẩm hay xuất hiện cùng trong 1 đơn hàng. Chỉ xét đơn có từ 2 sản phẩm khác nhau trở lên. 
+--Output: sản phẩm A, sản phẩm B, số lần xuất hiện cùng
+
+WITH order_products AS (
+  SELECT DISTINCT s.order_id, s.product_code
+  FROM e_commerce.ecom_sales AS s
+),
+pairs AS (
+  SELECT
+    a.product_code AS product_a_code,
+    b.product_code AS product_b_code,
+    COUNT(*) AS times_together
+  FROM order_products AS a
+  JOIN order_products AS b
+    ON b.order_id = a.order_id
+   AND b.product_code > a.product_code
+  GROUP BY a.product_code, b.product_code
+)
+SELECT TOP (15)
+  pa.product AS product_a,
+  pb.product AS product_b,
+  pr.times_together
+FROM pairs AS pr
+JOIN e_commerce.product AS pa
+  ON pa.product_code = pr.product_a_code
+JOIN e_commerce.product AS pb
+  ON pb.product_code = pr.product_b_code
+ORDER BY pr.times_together DESC, product_a, product_b;
