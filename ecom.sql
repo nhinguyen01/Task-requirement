@@ -1,6 +1,3 @@
-USE xomdata_dataset;
-GO
-
 SELECT 
     t.name AS table_name,
     s.name AS schema_name
@@ -15,8 +12,7 @@ ORDER BY ORDINAL_POSITION; -- Kiểm tra các cột trong bảng 'ecom_sales' th
 
 EXEC sp_help 'e_commerce.customer'; --kiểm tra nhanh table có những column gì
 
-SELECT TOP 5 *
-FROM e_commerce.ecom_sales; 
+SELECT TOP 5 * FROM e_commerce.ecom_sales; 
 
 --Thống kê tổng số data và số dòng NULL của từng cột trong bảng thuộc schema 
 
