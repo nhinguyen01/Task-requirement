@@ -141,8 +141,6 @@ ORDER BY tongsotien DESC;
 --Q8: check tỷ lệ sử dụng hạn mức thẻ tín dụng của từng khách trong 30 ngày gần nhất (tổng chi tiêu / tổng hạn mức)
 -- Chỉ xét thẻ credit, không tính debit/prepaid. Khách utilization cao = rủi ro default cao
 
-SELECT 
-FROM 
 
 SELECT TOP 5 * FROM banking.cards;
 SELECT TOP 5 * FROM banking.transactions;
